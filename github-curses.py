@@ -3,6 +3,11 @@ import argparse
 import curses
 import requests
 from curses import panel
+import json
+import code
+import sys
+
+debug = lambda: curses.endwin() or code.interact(local=globals().update(locals()) or globals())
 
 def begin_curses():
     curses.noecho()
@@ -17,11 +22,12 @@ class API:
     def __init__(self):
         self.BASE = 'https://api.github.com/'
 
-    def search(self, query, **kwargs):
-        url = f'{self.BASE}search/{kwargs["opt"]}?q={query}'
+    def search(self, query, what, **kwargs):
+        url = f'{self.BASE}search/{what}?q={query}'
         for k,v in kwargs:
             if k in ['page', 'sort', 'order', 'per_page']:
                 url += f'&{k}={v}'
+        return json.loads(requests.get(url).text)
 
 class Interface:
 
@@ -43,7 +49,7 @@ class Interface:
 
     def search(self):
         L,C = self.stdscr.getmaxyx()
-        self.search_opt_win = self.left_win.subwin(10, C//3, L//2-10, C//2-20)
+        self.search_opt_win = self.left_win.subwin(10, C//3, L//3, C//3)
         opts = {
                 'C': 'commits',
                 'c': 'code',
@@ -56,9 +62,44 @@ class Interface:
         self.search_opt_win.border()
         self.search_opt_win.refresh()
         opt = chr(self.search_opt_win.getch())
+        if opt not in opts:
+            return
         self.search_opt_win.clear()
-        self.left_win.addstr(2, 2, opts[opt] + ': ')
-        self.left_win.move(2, 4 + len(opts[opt]))
+        curses.curs_set(1)
+        while True:
+            self.left_win.clear()
+            self.left_win.border()
+            self.left_win.move(1, 4 + len(opts[opt] + self.char_stack))
+            self.left_win.addstr(1, 2, opts[opt] + ': ' + self.char_stack)
+            char = chr(self.left_win.getch())
+            if char == '\x7f':
+                self.char_stack = self.char_stack[:-1]
+            elif char == '\n':
+                return self.api.search(self.char_stack, opts[opt])
+            elif len(char) > 1 or char == curses.KEY_RESIZE:
+                pass
+            else:
+                self.char_stack += char
+
+    def nav_search_results(self, results):
+        L,C = self.stdscr.getmaxyx()
+        self.left_win.clear()
+        self.left_win.border()
+        index = 0
+        while True:
+            for i,item in enumerate(results['items']):
+                if i == L - 2: break
+                if i == index:
+                    self.left_win.addstr(1+i, 2, item['full_name'], curses.A_REVERSE)
+                else:
+                    self.left_win.addstr(1+i, 2, item['full_name'])
+            self.left_win.refresh()
+            key = chr(self.left_win.getch())
+            if key == 'k':
+                index -= 1
+            elif key == 'j':
+                index += 1
+            index = max(min(index, L-3), 0)
 
     def do_getch(self):
         L,C = self.stdscr.getmaxyx()
@@ -66,11 +107,12 @@ class Interface:
         char = chr(gotch)
         if char == '\x7f':
             self.char_stack = self.char_stack[:-1]
-        elif char == 'a':
-            pass
         elif char == 's':
-            self.search()
-            curses.curs_set(1)
+            results = self.search()
+            if results:
+                self.nav_search_results(results)
+        elif char == 'q':
+            sys.exit(0)
         elif char == '?':
             self.show_help()
         elif len(char) > 1 or gotch == curses.KEY_RESIZE:
